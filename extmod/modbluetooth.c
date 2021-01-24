@@ -47,10 +47,6 @@
 #error l2cap channels require synchronous modbluetooth events
 #endif
 
-#if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING && !MICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS
-#error pairing and bonding require synchronous modbluetooth events
-#endif
-
 #define MP_BLUETOOTH_CONNECT_DEFAULT_SCAN_DURATION_MS 2000
 
 #define MICROPY_PY_BLUETOOTH_MAX_EVENT_DATA_TUPLE_LEN 5
@@ -59,6 +55,21 @@
 // This formula is intended to allow queuing the data of a large characteristic
 // while still leaving room for a couple of normal (small, fixed size) events.
 #define MICROPY_PY_BLUETOOTH_MAX_EVENT_DATA_BYTES_LEN(ringbuf_size) (MAX((int)((ringbuf_size) / 2), (int)(ringbuf_size) - 64))
+#endif
+
+#if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+
+#define MP_BLUETOOTH_SECRETS_MAX_KEY_SIZE 10
+#define MP_BLUETOOTH_SECRETS_MAX_VALUE_SIZE 110
+
+typedef struct {
+    uint8_t type;
+    uint8_t key_len;
+    uint8_t key[MP_BLUETOOTH_SECRETS_MAX_KEY_SIZE];
+    uint8_t value_len;
+    uint8_t value[MP_BLUETOOTH_SECRETS_MAX_VALUE_SIZE];
+} secret_t;
+
 #endif
 
 // bluetooth.BLE type. This is currently a singleton, however in the future
@@ -75,6 +86,10 @@ typedef struct {
     mp_obj_array_t irq_data_data;
     mp_obj_bluetooth_uuid_t irq_data_uuid;
     ringbuf_t ringbuf;
+    #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+    uint8_t secret_count;
+    secret_t* secrets;
+    #endif
     #endif
 } mp_obj_bluetooth_ble_t;
 
@@ -272,6 +287,12 @@ STATIC mp_obj_t bluetooth_ble_make_new(const mp_obj_type_t *type, size_t n_args,
 
         // Allocate the default ringbuf.
         ringbuf_alloc(&o->ringbuf, MICROPY_PY_BLUETOOTH_RINGBUF_SIZE);
+
+        #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+        o->secret_count = 0;
+        o->secrets = NULL;
+        #endif
+
         #endif
 
         MP_STATE_VM(bluetooth) = MP_OBJ_FROM_PTR(o);
@@ -697,6 +718,56 @@ STATIC mp_obj_t bluetooth_ble_gap_passkey(size_t n_args, const mp_obj_t *args) {
     return bluetooth_handle_errno(mp_bluetooth_gap_passkey(conn_handle, action, passkey));
 }
 STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(bluetooth_ble_gap_passkey_obj, 4, 4, bluetooth_ble_gap_passkey);
+
+STATIC mp_obj_t bluetooth_ble_gap_set_secrets(mp_obj_t self_in, mp_obj_t secrets_in) {
+    mp_obj_bluetooth_ble_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_obj_t len_in = mp_obj_len(secrets_in);
+    size_t len = mp_obj_get_int(len_in);
+    if (self->secrets != NULL) {
+        self->secrets = m_renew(secret_t, self->secrets, self->secret_count, len);
+    } else {
+        self->secrets = m_new(secret_t, len);
+    }
+    self->secret_count = len;
+    for (size_t i = 0; i < len; ++i) {
+        self->secrets[i].type = 0;
+    }
+
+    mp_obj_iter_buf_t iter_buf;
+    mp_obj_t iterable = mp_getiter(secrets_in, &iter_buf);
+    mp_obj_t secret_obj_in;
+    size_t i = 0;
+    while ((secret_obj_in = mp_iternext(iterable)) != MP_OBJ_STOP_ITERATION) {
+        if (!mp_obj_is_dict_or_ordereddict(secret_obj_in)) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Invalid secret, not a dict"));
+        }
+        mp_obj_t key_in = mp_obj_dict_get(secret_obj_in, MP_OBJ_NEW_QSTR(MP_QSTR_key));
+        mp_obj_t value_in = mp_obj_dict_get(secret_obj_in, MP_OBJ_NEW_QSTR(MP_QSTR_value));
+        mp_obj_t type_in = mp_obj_dict_get(secret_obj_in, MP_OBJ_NEW_QSTR(MP_QSTR_type));
+
+        mp_buffer_info_t key_bufinfo = {0};
+        mp_get_buffer_raise(key_in, &key_bufinfo , MP_BUFFER_READ);
+        if (key_bufinfo.len > MP_BLUETOOTH_SECRETS_MAX_KEY_SIZE) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Invalid key, too large"));
+        }
+        self->secrets[i].key_len = key_bufinfo.len;
+        memcpy(self->secrets[i].key, key_bufinfo.buf, key_bufinfo.len);
+
+        mp_buffer_info_t value_bufinfo = {0};
+        mp_get_buffer_raise(value_in, &value_bufinfo , MP_BUFFER_READ);
+        if (value_bufinfo.len > MP_BLUETOOTH_SECRETS_MAX_VALUE_SIZE) {
+            mp_raise_ValueError(MP_ERROR_TEXT("Invalid value, too large"));
+        }
+        self->secrets[i].value_len = value_bufinfo.len;
+        memcpy(self->secrets[i].value, value_bufinfo.buf, value_bufinfo.len);
+
+        self->secrets[i].type = mp_obj_get_int(type_in);
+
+        ++i;
+    }
+    return MP_OBJ_NEW_SMALL_INT(len);
+}
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(bluetooth_ble_gap_set_secrets_obj, bluetooth_ble_gap_set_secrets);
 #endif // MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
 
 // ----------------------------------------------------------------------------
@@ -920,6 +991,7 @@ STATIC const mp_rom_map_elem_t bluetooth_ble_locals_dict_table[] = {
     #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
     { MP_ROM_QSTR(MP_QSTR_gap_pair), MP_ROM_PTR(&bluetooth_ble_gap_pair_obj) },
     { MP_ROM_QSTR(MP_QSTR_gap_passkey), MP_ROM_PTR(&bluetooth_ble_gap_passkey_obj) },
+    { MP_ROM_QSTR(MP_QSTR_gap_set_secrets), MP_ROM_PTR(&bluetooth_ble_gap_set_secrets_obj) },
     #endif
     // GATT Server (i.e. peripheral/advertiser role)
     { MP_ROM_QSTR(MP_QSTR_gatts_register_services), MP_ROM_PTR(&bluetooth_ble_gatts_register_services_obj) },
@@ -1086,6 +1158,20 @@ STATIC mp_obj_t bluetooth_ble_invoke_irq(mp_obj_t none_in) {
             // conn_handle, value_handle, status
             ringbuf_extract(&o->ringbuf, data_tuple, 3, 0, NULL, 0, NULL, NULL);
         #endif // MICROPY_PY_BLUETOOTH_ENABLE_CENTRAL_MODE
+        #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+        } else if (event == MP_BLUETOOTH_IRQ_ENCRYPTION_UPDATE) {
+            // conn_handle, encrypted, authenticated, bonded, key_size
+            ringbuf_extract(&o->ringbuf, data_tuple, 1, 4, NULL, 0, NULL, NULL);
+        } else if (event == MP_BLUETOOTH_IRQ_GET_SECRET) {
+            // type, index, key
+            ringbuf_extract(&o->ringbuf, data_tuple, 0, 2, NULL, 0, NULL, &o->irq_data_data);
+        } else if (event == MP_BLUETOOTH_IRQ_SET_SECRET) {
+            // type, key_len, value_len, data
+            ringbuf_extract(&o->ringbuf, data_tuple, 0, 3, NULL, 0, NULL, &o->irq_data_data);
+        } else if (event == MP_BLUETOOTH_IRQ_PASSKEY_ACTION) {
+            // conn_handle, action
+            ringbuf_extract(&o->ringbuf, data_tuple, 1, 1, NULL, 0, NULL, NULL);
+        #endif // MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
         }
 
         MICROPY_PY_BLUETOOTH_EXIT
@@ -1401,6 +1487,77 @@ void mp_bluetooth_gap_on_connection_update(uint16_t conn_handle, uint16_t conn_i
     }
     schedule_ringbuf(atomic_state);
 }
+
+#if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+void mp_bluetooth_gatts_on_encryption_update(uint16_t conn_handle, bool encrypted, bool authenticated, bool bonded, uint8_t key_size) {
+    MICROPY_PY_BLUETOOTH_ENTER
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+    if (enqueue_irq(o, 2 + 1 + 1 + 1 + 1, MP_BLUETOOTH_IRQ_ENCRYPTION_UPDATE)) {
+        ringbuf_put16(&o->ringbuf, conn_handle);
+        ringbuf_put(&o->ringbuf, encrypted);
+        ringbuf_put(&o->ringbuf, authenticated);
+        ringbuf_put(&o->ringbuf, bonded);
+        ringbuf_put(&o->ringbuf, key_size);
+    }
+    schedule_ringbuf(atomic_state);
+}
+
+bool mp_bluetooth_gap_on_get_secret(uint8_t type, uint8_t index, const uint8_t *key, size_t key_len, const uint8_t **value, size_t *value_len) {
+    MICROPY_PY_BLUETOOTH_ENTER
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+    if (enqueue_irq(o, 1 + 1 + 2 + key_len, MP_BLUETOOTH_IRQ_GET_SECRET)) {
+        ringbuf_put(&o->ringbuf, type);
+        ringbuf_put(&o->ringbuf, index);
+        ringbuf_put16(&o->ringbuf, key_len);
+        for (size_t i = 0; i < key_len; ++i)
+            ringbuf_put(&o->ringbuf, key[i]);
+    }
+    bool result = false;
+    for (size_t i = 0; i < o->secret_count; ++i) {
+        if (o->secrets[i].type == 0) continue;
+        if (o->secrets[i].type != type) continue;
+        if (o->secrets[i].key_len != key_len) continue;
+        if (memcmp(o->secrets[i].key, key, key_len) != 0) continue;
+        *value = o->secrets[i].value;
+        *value_len = o->secrets[i].value_len;
+        result = true;
+        break;
+    }
+    schedule_ringbuf(atomic_state);
+    return result;
+}
+
+bool mp_bluetooth_gap_on_set_secret(uint8_t type, const uint8_t *key, size_t key_len, const uint8_t *value, size_t value_len) {
+    MICROPY_PY_BLUETOOTH_ENTER
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+    assert(key_len < 128);
+    assert(value_len < 128);
+    if (enqueue_irq(o, 1 + 1 + 1 + 2 + key_len + value_len, MP_BLUETOOTH_IRQ_SET_SECRET)) {
+        ringbuf_put(&o->ringbuf, type);
+        ringbuf_put(&o->ringbuf, key_len);
+        ringbuf_put(&o->ringbuf, value_len);
+        size_t data_len = MIN(o->irq_data_data_alloc, key_len + value_len);
+        ringbuf_put16(&o->ringbuf, data_len);
+        for (size_t i = 0; i < key_len; ++i)
+            ringbuf_put(&o->ringbuf, key[i]);
+        for (size_t i = 0; i+key_len < data_len; ++i)
+            ringbuf_put(&o->ringbuf, value[i]);
+    }
+    schedule_ringbuf(atomic_state);
+    return true;
+}
+
+void mp_bluetooth_gap_on_passkey_action(uint16_t conn_handle, uint8_t action, mp_int_t passkey) {
+    MICROPY_PY_BLUETOOTH_ENTER
+    mp_obj_bluetooth_ble_t *o = MP_OBJ_TO_PTR(MP_STATE_VM(bluetooth));
+    if (enqueue_irq(o, 2 + 1, MP_BLUETOOTH_IRQ_PASSKEY_ACTION)) {
+        ringbuf_put16(&o->ringbuf, conn_handle);
+        ringbuf_put(&o->ringbuf, action);
+        // TODO: passkey
+    }
+    schedule_ringbuf(atomic_state);
+}
+#endif // MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
 
 void mp_bluetooth_gatts_on_write(uint16_t conn_handle, uint16_t value_handle) {
     MICROPY_PY_BLUETOOTH_ENTER

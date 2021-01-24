@@ -52,7 +52,7 @@
 #define MICROPY_PY_BLUETOOTH_DEFAULT_GAP_NAME "MPY NIMBLE"
 #endif
 
-#define DEBUG_printf(...) // printf("nimble: " __VA_ARGS__)
+#define DEBUG_printf(...) printf("nimble: " __VA_ARGS__)
 
 #define ERRNO_BLUETOOTH_NOT_ACTIVE MP_ENODEV
 
@@ -192,6 +192,13 @@ STATIC void set_random_address(bool nrpa) {
 }
 
 #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
+
+#if MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY
+STATIC int load_irk(void) {
+    return 0;
+}
+#else
+
 // For ble_hs_pvcy_set_our_irk
 #include "nimble/host/src/ble_hs_pvcy_priv.h"
 // For ble_hs_hci_util_rand
@@ -244,6 +251,8 @@ STATIC int load_irk(void) {
     rc = ble_hs_misc_restore_irks();
     return rc;
 }
+
+#endif
 #endif
 
 STATIC void sync_cb(void) {
@@ -664,6 +673,7 @@ void mp_bluetooth_set_address_mode(uint8_t addr_mode) {
 #if MICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING
 void mp_bluetooth_set_bonding(bool enabled) {
     ble_hs_cfg.sm_bonding = enabled;
+    ble_hs_cfg.sm_our_key_dist = ble_hs_cfg.sm_their_key_dist = 3;
 }
 
 void mp_bluetooth_set_mitm_protection(bool enabled) {
@@ -1709,9 +1719,9 @@ STATIC int ble_store_ram_read(int obj_type, const union ble_store_key *key, unio
         case BLE_STORE_OBJ_TYPE_OUR_SEC: {
             // <type=our,addr,ediv_rand>
             // Find our secret for this remote device, matching this ediv/rand key.
-            assert(ble_addr_cmp(&key->sec.peer_addr, BLE_ADDR_ANY)); // Must have address.
+            //assert(ble_addr_cmp(&key->sec.peer_addr, BLE_ADDR_ANY)); // Must have address.
             assert(key->sec.idx == 0);
-            assert(key->sec.ediv_rand_present);
+            //assert(key->sec.ediv_rand_present);
             key_data = (const uint8_t *)&key->sec.peer_addr;
             key_data_len = sizeof(ble_addr_t);
             break;

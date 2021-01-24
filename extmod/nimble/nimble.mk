@@ -15,6 +15,8 @@ MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY ?= 0
 
 CFLAGS_MOD += -DMICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY=$(MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY)
 
+CFLAGS_MOD += -DMICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING=1
+
 ifeq ($(MICROPY_BLUETOOTH_NIMBLE_BINDINGS_ONLY),0)
 
 # On all ports where we provide the full implementation (i.e. not just
@@ -27,7 +29,6 @@ CFLAGS_MOD += -DMICROPY_PY_BLUETOOTH_USE_SYNC_EVENTS=1
 # Without the ringbuffer, and with the full implementation, we can also
 # enable pairing and bonding. This requires both synchronous events and
 # some customisation of the key store.
-CFLAGS_MOD += -DMICROPY_PY_BLUETOOTH_ENABLE_PAIRING_BONDING=1
 
 NIMBLE_LIB_DIR = lib/mynewt-nimble
 
